@@ -1,0 +1,122 @@
+import os
+import hashlib
+from Crypto.Cipher import AES, PKCS1_OAEP
+from Crypto.PublicKey import RSA
+from Crypto.Random import get_random_bytes
+from Crypto.Hash import SHA256
+from datetime import datetime
+import logging
+
+# Set up logging configuration
+logging.basicConfig(filename='audit_log.txt', level=logging.INFO,
+                    format='%(asctime)s - %(message)s')
+
+# Generate RSA Keypair for Encryption/Decryption
+def generate_rsa_keypair():
+    key = RSA.generate(2048)
+    return key.export_key(), key.publickey().export_key()
+
+# Encrypt file using AES and RSA (client-side encryption)
+def encrypt_file(file_path, recipient_pub_key):
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"The file '{file_path}' does not exist.")
+
+    # Generate AES key and encrypt file contents
+    aes_key = get_random_bytes(32)
+    cipher_aes = AES.new(aes_key, AES.MODE_GCM)
+    with open(file_path, 'rb') as file:
+        plaintext = file.read()
+    ciphertext, tag = cipher_aes.encrypt_and_digest(plaintext)
+
+    # Encrypt AES key with recipient's RSA public key
+    recipient_key = RSA.import_key(recipient_pub_key)
+    rsa_cipher = PKCS1_OAEP.new(recipient_key)
+    encrypted_aes_key = rsa_cipher.encrypt(aes_key)
+
+    # Calculate file hash for integrity
+    file_hash = SHA256.new(plaintext).digest()
+
+    return {
+        'encrypted_aes_key': encrypted_aes_key,
+        'ciphertext': ciphertext,
+        'nonce': cipher_aes.nonce,
+        'tag': tag,
+        'file_hash': file_hash
+    }
+
+# Decrypt file using AES and RSA (client-side decryption)
+def decrypt_file(encrypted_data, private_key):
+    private_rsa_key = RSA.import_key(private_key)
+    rsa_cipher = PKCS1_OAEP.new(private_rsa_key)
+    aes_key = rsa_cipher.decrypt(encrypted_data['encrypted_aes_key'])
+
+    # Decrypt file content using AES
+    cipher_aes = AES.new(aes_key, AES.MODE_GCM, nonce=encrypted_data['nonce'])
+    decrypted_data = cipher_aes.decrypt_and_verify(encrypted_data['ciphertext'], encrypted_data['tag'])
+    return decrypted_data
+
+# Verify file integrity
+def verify_file_integrity(original_hash, file_data):
+    return SHA256.new(file_data).digest() == original_hash
+
+# Simulate Server Storage
+file_storage = {}
+
+# Store Encrypted File and Metadata on "Server"
+def store_encrypted_file(file_id, encrypted_data):
+    file_storage[file_id] = {
+        **encrypted_data,
+        'timestamp': datetime.now().isoformat()
+    }
+
+# Log file access for auditing
+def log_access(user_id, file_id, action):
+    logging.info(f"user_id={user_id}, file_id={file_id}, action={action}")
+
+# Retrieve and decrypt file from "Server"
+def retrieve_file(file_id, private_key):
+    if file_id not in file_storage:
+        raise KeyError("File not found on server.")
+
+    encrypted_data = file_storage[file_id]
+    decrypted_file = decrypt_file(encrypted_data, private_key)
+
+    # Verify file integrity
+    if not verify_file_integrity(encrypted_data['file_hash'], decrypted_file):
+        raise ValueError("File integrity verification failed.")
+    
+    return decrypted_file
+
+# Main simulation function
+def main():
+    # Generate RSA Keypair
+    private_key, public_key = generate_rsa_keypair()
+
+    # Create sample file
+    file_path = 'sample_file.txt'
+    if not os.path.isfile(file_path):
+        with open(file_path, 'w') as file:
+            file.write("This is a test file for encryption.")
+
+    # Encrypt and store the file
+    file_id = "file_1"
+    encrypted_data = encrypt_file(file_path, public_key)
+    store_encrypted_file(file_id, encrypted_data)
+    log_access(user_id="user_1", file_id=file_id, action="upload")
+
+    # Retrieve and decrypt the file
+    try:
+        decrypted_file = retrieve_file(file_id, private_key)
+        print("File successfully decrypted and integrity verified.")
+        
+        # Write decrypted file to disk (optional)
+        with open('decrypted_sample_file.txt', 'wb') as file:
+            file.write(decrypted_file)
+
+    except Exception as error:
+        print(f"Error during file retrieval or verification: {error}")
+    log_access(user_id="user_1", file_id=file_id, action="download")
+
+# Run the simulation
+if __name__ == "__main__":
+    main()
